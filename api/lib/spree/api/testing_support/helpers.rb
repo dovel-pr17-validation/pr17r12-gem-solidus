@@ -1,0 +1,60 @@
+# frozen_string_literal: true
+
+module Spree
+  module Api
+    module TestingSupport
+      module Helpers
+        def json_response
+          case body = JSON.parse(response.body)
+          when Hash
+            body.with_indifferent_access
+          when Array
+            body
+          end
+        end
+
+        def assert_not_found!
+          expect(json_response).to eq({"error" => I18n.t(:resource_not_found, scope: "spree.api")})
+          expect(response.status).to eq 404
+        end
+
+        def assert_unauthorized!
+          expect(json_response).to eq({"error" => I18n.t(:unauthorized, scope: "spree.api")})
+          expect(response.status).to eq 401
+        end
+
+        def assert_forbidden!
+          expect(json_response).to eq({"error" => I18n.t(:forbidden, scope: "spree.api")})
+          expect(response.status).to eq 403
+        end
+
+        def stub_authentication!
+          allow(Spree.user_class).to receive(:find_by).with(hash_including(:spree_api_key)) { current_api_user }
+        end
+
+        # This method can be overridden (with a let block) inside a context
+        # For instance, if you wanted to have an admin user instead.
+        def current_api_user
+          @_current_api_user ||= stub_model(Spree::LegacyUser, email: "solidus@example.com", spree_roles: [])
+        end
+
+        def image(filename)
+          File.open(
+            File.join(
+              Spree::Core::Engine.root,
+              "lib",
+              "spree",
+              "testing_support",
+              "fixtures",
+              filename
+            )
+          )
+        end
+
+        def upload_image(filename)
+          Rack::Test::UploadedFile.new(File.open(image(filename).path), "image/jpeg")
+        end
+      end
+    end
+  end
+end

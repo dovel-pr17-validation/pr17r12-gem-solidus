@@ -1,0 +1,205 @@
+# frozen_string_literal: true
+
+require "rails_helper"
+
+RSpec.describe Spree::Store, type: :model do
+  it { is_expected.to respond_to(:cart_tax_country_iso) }
+
+  describe ".default" do
+    it "should ensure saved store becomes default if one doesn't exist yet" do
+      expect(Spree::Store.where(default: true).count).to eq(0)
+      store = build(:store)
+      expect(store.default).not_to be true
+
+      store.save!
+
+      expect(store.default).to be true
+    end
+
+    it "should ensure there is only one default" do
+      orig_default_store = create(:store, default: true)
+      expect(orig_default_store.reload.default).to be true
+
+      new_default_store = create(:store, default: true)
+
+      expect(Spree::Store.where(default: true).count).to eq(1)
+
+      [orig_default_store, new_default_store].each(&:reload)
+
+      expect(new_default_store.default).to be true
+      expect(orig_default_store.default).not_to be true
+    end
+  end
+
+  describe "#default_cart_tax_location" do
+    subject { described_class.new(cart_tax_country_iso:) }
+    context "when there is no cart_tax_country_iso set" do
+      let(:cart_tax_country_iso) { "" }
+      it "responds with an empty default_cart_tax_location" do
+        expect(subject.default_cart_tax_location).to be_empty
+      end
+    end
+
+    context "when there is a cart_tax_country_iso set" do
+      let(:country) { create(:country, iso: "DE") }
+      let(:cart_tax_country_iso) { country.iso }
+
+      it "responds with a default_cart_tax_location with that country" do
+        expect(subject.default_cart_tax_location).to eq(Spree::Tax::TaxLocation.new(country:))
+      end
+    end
+  end
+
+  describe "#available_locales" do
+    let(:store) { described_class.new(available_locales: locales) }
+    subject { store.available_locales }
+
+    context "with available_locales: []" do
+      let(:locales) { [] }
+
+      it "returns all available locales" do
+        expect(subject).to eq([:en])
+      end
+
+      it "serializes as nil" do
+        expect(store[:available_locales]).to be nil
+      end
+    end
+
+    context "with available_locales: [:en]" do
+      let(:locales) { [:en] }
+
+      it "returns [:en]" do
+        expect(subject).to eq([:en])
+      end
+
+      it "serializes correctly" do
+        expect(store[:available_locales]).to eq("en")
+      end
+    end
+
+    context "with available_locales: [:en, :fr]" do
+      let(:locales) { [:en, :fr] }
+
+      it "returns [:fr]" do
+        expect(subject).to eq([:en, :fr])
+      end
+
+      it "serializes correctly" do
+        expect(store[:available_locales]).to eq("en,fr")
+      end
+    end
+
+    context "with available_locales: [:fr]" do
+      let(:locales) { [:fr] }
+
+      it "returns [:fr]" do
+        expect(subject).to eq([:fr])
+      end
+    end
+
+    context 'with available_locales: ["fr"]' do
+      let(:locales) { ["fr"] }
+
+      it "returns symbols [:fr]" do
+        expect(subject).to eq([:fr])
+      end
+    end
+  end
+
+  describe "enum reverse_charge_status" do
+    it "defines the expected enum values" do
+      expect(Spree::Store.reverse_charge_statuses).to eq({
+        "disabled" => 0,
+        "enabled" => 1,
+        "not_validated" => 2
+      })
+    end
+
+    it "allows valid values" do
+      store = build(:store)
+      # Updates the reverse_charge_status to "not_validated"
+      expect(store).to be_valid
+      store.reverse_charge_status_not_validated!
+
+      # Updates the reverse_charge_status to "disabled"
+      expect(store).to be_valid
+      store.reverse_charge_status_disabled!
+      expect(store).to be_valid
+
+      # Updates the reverse_charge_status to "enabled"
+      store.reverse_charge_status_enabled!
+      expect(store).to be_valid
+    end
+
+    it "raises an error for invalid values" do
+      expect { Spree::Store.new(reverse_charge_status: :invalid_status) }.to raise_error(ArgumentError)
+    end
+  end
+
+  describe "#address" do
+    it "is optional" do
+      expect(build(:store, address: nil)).to be_valid
+    end
+
+    it "can be assigned" do
+      store = create(:store, :with_address)
+      expect(store.reload.address).to be_a(Spree::Address)
+    end
+  end
+
+  describe "#address_attributes=" do
+    let(:address_attributes) { attributes_for(:address).merge(country_id: create(:country, states_required: false).id) }
+
+    it "creates an address" do
+      store = create(:store, address_attributes:)
+      expect(store.reload.address).to have_attributes(address_attributes.slice(:name, :address1, :city))
+    end
+
+    it "invalidates the store if the address is invalid" do
+      store = build(:store, address_attributes: address_attributes.merge(city: nil))
+      expect(store).not_to be_valid
+      expect(store.errors).to include(:address)
+    end
+
+    it "does not modify the existing address on change" do
+      store = create(:store, :with_address)
+      original_address = store.address
+
+      store.update!(address_attributes: {city: "New City"})
+
+      expect(store.reload.address).not_to eq(original_address)
+      expect(store.address.city).to eq("New City")
+      expect(original_address.reload.city).not_to eq("New City")
+    end
+
+    it "keeps the existing address if nothing changed" do
+      store = create(:store, :with_address)
+      original_address = store.address
+
+      store.update!(address_attributes: {city: original_address.city})
+
+      expect(store.reload.address).to eq(original_address)
+    end
+  end
+
+  describe "#validate_not_default" do
+    context "when deleting a default store" do
+      it "prevents deletion" do
+        store = create(:store, default: true)
+        expect(store.destroy).to eq false
+        expect(store.errors.full_messages.join).to match(/Cannot destroy/)
+        expect { store.reload }.not_to raise_error
+      end
+    end
+
+    context "when deleting a non-default store" do
+      it "allows deletion" do
+        create(:store, default: true)
+        store = create(:store, default: false)
+        expect(store.destroy).to be_truthy
+        expect { store.reload }.to raise_error(ActiveRecord::RecordNotFound)
+      end
+    end
+  end
+end

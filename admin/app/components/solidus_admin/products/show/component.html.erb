@@ -1,0 +1,144 @@
+<%= page do %>
+  <%= page_header do %>
+    <%= page_header_back(solidus_admin.products_path) %>
+    <%= page_header_title(@product.name) do %>
+      <%= render component("products/status").from_product(@product) %>
+    <% end %>
+    <%= page_header_actions do %>
+      <%= render component("ui/button").new(
+        tag: :a,
+        text: t(".duplicate"),
+        href: spree.clone_admin_product_path(@product),
+        scheme: :ghost
+      ) %>
+
+      <%= render component("ui/button").new(
+        tag: :a,
+        text: t(".view"),
+        href: SolidusAdmin::Config.storefront_product_path(@product),
+        target: :_blank,
+        scheme: :ghost
+      ) %>
+      <%= render component("ui/button").save(form: form_id) %>
+    <% end %>
+  <% end %>
+
+  <%= solidus_form_for @product, url: solidus_admin.product_path(@product), html: { id: form_id } do |f| %>
+    <%= page_with_sidebar do %>
+      <%= page_with_sidebar_main do %>
+        <%= render component("products/form/identity").new(form: f) %>
+
+        <%= render component("products/form/seo").new(form: f) %>
+
+        <%= render component("ui/panel").new(title: t(".media")) do |panel| %>
+          <% panel.with_action(
+            name: t(".manage_images"),
+            scheme: :secondary,
+            href: spree.admin_product_images_path(@product)
+          ) %>
+        <% end %>
+
+        <%= render component("products/form/pricing").new(form: f) %>
+
+        <%= render component("ui/panel").new(title: t(".stock")) do |panel| %>
+          <%= f.text_field(:sku) %>
+
+          <% panel.with_action(
+            name: t(".manage_stock"),
+            scheme: :secondary,
+            href: spree.admin_product_stock_path(@product)
+          ) %>
+        <% end %>
+
+        <%= render component("products/form/shipping").new(form: f) %>
+
+        <%= render component("ui/panel").new(title: t(".options")) do |panel| %>
+          <% if @product.product_option_types.present? %>
+            <% panel.with_section do %>
+              <div class="flex flex-col gap-4" data-controller="sortable" data-sortable-handle-value=".handle">
+                <% @product.product_option_types.includes(option_type: :option_values).order(:position).each do |product_option| %>
+                  <div class="flex gap-2 justify-between" data-sortable-url=<%= solidus_admin.move_product_option_type_path(product_option) %>>
+                    <div class="flex gap-2">
+                      <div class="flex items-center">
+                        <%= render component("ui/icon").new(name: "draggable", class: "w-6 h-6 cursor-grab handle fill-gray-500") %>
+                      </div>
+                      <div class="flex flex-col gap-2">
+                        <span class="font-semibold text-sm"><%= product_option.option_type.name %>:<%= product_option.option_type.presentation %></span>
+                        <div class="flex gap-2 flex-wrap">
+                          <% product_option.option_type.option_values.each do |value| %>
+                            <%= render component("ui/badge").new(name: "#{value.name}:#{value.presentation}") %>
+                          <% end %>
+                        </div>
+                      </div>
+                    </div>
+                    <div class="flex items-center">
+                      <%= render component("ui/button").new(tag: :a, href: spree.edit_admin_option_type_path(product_option.option_type), scheme: :secondary, text: t(".edit")) %>
+                    </div>
+                  </div>
+                <% end %>
+              </div>
+            <% end %>
+          <% end %>
+
+          <div class="flex gap-4 justify-between items-end">
+            <%= hidden_field_tag "#{f.object_name}[option_type_ids][]", nil %>
+            <%= f.select(:option_type_ids, option_type_options, multiple: true) %>
+            <%= render component("ui/button").new(type: :submit, text: t(".save")) %>
+          </div>
+
+          <% panel.with_action(
+            name: t(".manage_options"),
+            scheme: :secondary,
+            href: solidus_admin.option_types_path
+          ) %>
+        <% end %>
+
+        <%= render component("ui/panel").new(title: t(".specifications")) do |panel| %>
+          <% panel.with_action(
+            name: t(".manage_properties"),
+            scheme: :secondary,
+            href: spree.admin_product_product_properties_path(@product)
+          ) %>
+        <% end %>
+      <% end %>
+
+      <%= page_with_sidebar_aside do %>
+        <%= render component("products/form/publishing").new(form: f) %>
+
+        <%= render component("ui/panel").new(title: t(".product_organization")) do |panel| %>
+          <%= hidden_field_tag "#{f.object_name}[taxon_ids][]", nil %>
+
+          <%= render component("turbo/target_frame").new(:product_organization_frame, source: :new_product_category) do %>
+            <%= render component("ui/forms/field").select(
+              f,
+              :taxon_ids,
+              taxon_options,
+              multiple: true
+            ) %>
+          <% end %>
+          <% panel.with_action(
+            name: t(".add_new_category"),
+            href: solidus_admin.new_product_taxon_path(@product),
+            data: { turbo_frame: :new_product_category }
+          ) %>
+        <% end %>
+      <% end %>
+    <% end %>
+  <% end %>
+
+  <%= page_footer do %>
+    <%= page_footer_actions do %>
+      <%= form_for @product, url: solidus_admin.product_path(@product), method: :delete do %>
+        <%= render component("ui/button").new(
+          tag: :button,
+          text: t(".delete"),
+          scheme: :danger,
+          "data-turbo-confirm": t(".delete_confirmation")
+        ) %>
+      <% end %>
+    <% end %>
+    <%= render component("ui/button").new(tag: :button, text: t(".save"), form: form_id) %>
+  <% end %>
+<% end %>
+
+<%= turbo_frame_tag :new_product_category, target: :product_organization_frame %>

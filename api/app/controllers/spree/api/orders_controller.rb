@@ -1,0 +1,218 @@
+# frozen_string_literal: true
+
+module Spree
+  module Api
+    class OrdersController < Spree::Api::BaseController
+      class_attribute :admin_shipment_attributes
+      self.admin_shipment_attributes = [:shipping_method, :stock_location, inventory_units: [:variant_id, :sku]]
+
+      class_attribute :admin_order_attributes
+      self.admin_order_attributes = [:import, :number, :completed_at, :locked_at, :channel, :user_id, :created_at]
+
+      class_attribute :admin_payment_attributes
+      self.admin_payment_attributes = [:payment_method, :amount, :state, source: {}]
+      msg = "`Spree::Api::OrdersController.admin_payment_attributes` is deprecated."
+      deprecate(
+        admin_payment_attributes: msg,
+        "admin_payment_attributes=": msg,
+        deprecator: Spree.deprecator
+      )
+
+      before_action :find_order, except: [:create, :mine, :current, :index]
+      around_action :lock_order, except: [:create, :mine, :current, :index, :show]
+
+      # Dynamically defines our stores checkout steps to ensure we check authorization on each step.
+      Spree::Order.checkout_steps.keys.each do |step|
+        define_method step do
+          authorize! :update, @order, params[:token]
+        end
+      end
+
+      def cancel
+        authorize! :update, @order, params[:token]
+        @order.canceled_by(current_api_user)
+        respond_with(@order, default_template: :show)
+      end
+
+      def create
+        authorize! :create, Order
+
+        if can?(:admin, Order)
+          @order = Spree::Core::Importer::Order.import(determine_order_user, order_params)
+          respond_with(@order, default_template: :show, status: 201)
+        else
+          @order = Spree::Order.create!(user: current_api_user, store: current_store)
+          if @order.contents.update_cart order_params
+            respond_with(@order, default_template: :show, status: 201)
+          else
+            invalid_resource!(@order)
+          end
+        end
+      end
+
+      def empty
+        authorize! :update, @order, order_token
+
+        if @order.complete?
+          invalid_resource!(@order)
+        else
+          @order.empty!
+          respond_with(@order, default_template: :show)
+        end
+      end
+
+      def index
+        authorize! :admin, Order
+        orders_includes = [
+          {user: :store_credits},
+          :line_items,
+          :valid_store_credit_payments
+        ]
+        @orders = paginate(
+          Spree::Order
+            .ransack(params[:q])
+            .result
+            .includes(orders_includes)
+        )
+        respond_with(@orders)
+      end
+
+      def show
+        authorize! :show, @order, order_token
+        respond_with(@order)
+      end
+
+      def update
+        authorize! :update, @order, order_token
+
+        user_id = params[:order][:user_id]
+        if can?(:admin, @order) && user_id
+          user = Spree.user_class.accessible_by(current_ability, :show).find(user_id)
+        end
+
+        if @order.contents.update_cart(order_params)
+          @order.associate_user!(user) if user
+          respond_with(@order, default_template: :show)
+        else
+          invalid_resource!(@order)
+        end
+      end
+
+      def current
+        if current_api_user && (@order = current_api_user.last_incomplete_spree_order(store: current_store))
+          respond_with(@order, default_template: :show, locals: {root_object: @order})
+        else
+          head :no_content
+        end
+      end
+
+      def mine
+        if current_api_user
+          @orders = current_api_user.orders.by_store(current_store).reverse_chronological.ransack(params[:q]).result
+          @orders = paginate(@orders)
+        else
+          render "spree/api/errors/unauthorized", status: :unauthorized
+        end
+      end
+
+      private
+
+      def order_params
+        if params[:order]
+          normalize_params
+          prevent_customer_metadata_update
+          params.require(:order).permit(permitted_order_attributes)
+        else
+          {}
+        end
+      end
+
+      def prevent_customer_metadata_update
+        return unless @order&.completed? && cannot?(:admin, Spree::Order)
+
+        params[:order]&.delete(:customer_metadata)
+      end
+
+      def normalize_params
+        if params[:order][:payments]
+          payments_params = params[:order].delete(:payments)
+          params[:order][:payments_attributes] = payments_params.map do |payment_params|
+            payment_params[:source_attributes] = payment_params.delete(:source) if payment_params[:source].present?
+            payment_params
+          end
+        end
+        params[:order][:shipments_attributes] = params[:order].delete(:shipments) if params[:order][:shipments]
+        params[:order][:line_items_attributes] = params[:order].delete(:line_items) if params[:order][:line_items]
+        params[:order][:ship_address_attributes] = params[:order].delete(:ship_address) if params[:order][:ship_address].present?
+        params[:order][:bill_address_attributes] = params[:order].delete(:bill_address) if params[:order][:bill_address].present?
+      end
+
+      # @api public
+      def determine_order_user
+        if order_params[:user_id].present?
+          Spree.user_class.accessible_by(current_ability, :show).find(order_params[:user_id])
+        else
+          current_api_user
+        end
+      end
+
+      def permitted_order_attributes
+        if can?(:admin, Spree::Order)
+          super + admin_order_attributes
+        else
+          # We need to remove the `:amount` attribute from payments_attributes
+          # for non-admin users. Unfortunately, order_attributes uses the
+          # checkout_payment_attributes instead of the payment_attributes, which
+          # needs to be able to set the amount.
+          #
+          # We're doing a deep_dup here to avoid modifying the original
+          # permitted attributes, which could have unintended side effects.
+          order_attributes = super.deep_dup
+
+          payments_attributes = order_attributes.find do |attribute|
+            attribute.is_a?(Hash) && attribute.has_key?(:payments_attributes)
+          end
+          payments_attributes[:payments_attributes] -= [:amount]
+
+          order_attributes
+        end
+      end
+
+      def permitted_shipment_attributes
+        if can?(:admin, Spree::Shipment)
+          super + admin_shipment_attributes
+        else
+          super
+        end
+      end
+
+      def permitted_payment_attributes
+        Spree.deprecator.warn(
+          "`Spree::Api::OrdersController#permitted_payment_attributes` is deprecated. " \
+          "This method was never actually used in this controller because " \
+          "permitted_order_attributes uses the permitted_checkout_payment_attributes " \
+          "method to determine the permitted attributes for payments."
+        )
+        if can?(:admin, Spree::Payment)
+          super + admin_payment_attributes
+        else
+          super
+        end
+      end
+
+      def find_order(_lock = false)
+        @order = Spree::Order
+          .includes(line_items: [:adjustments, {variant: :images}],
+            payments: :payment_method,
+            shipments: {
+              shipping_rates: {shipping_method: :zones, taxes: :tax_rate}
+            })
+          .find_by!(number: params[:id])
+      end
+
+      def order_id
+        super || params[:id]
+      end
+    end
+  end
+end

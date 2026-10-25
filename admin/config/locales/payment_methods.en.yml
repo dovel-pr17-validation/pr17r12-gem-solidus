@@ -1,0 +1,10 @@
+en:
+  solidus_admin:
+    payment_methods:
+      title: "Payment Methods"
+      create:
+        success: "Payment method was successfully created."
+      destroy:
+        success: "Payment methods were successfully removed."
+      update:
+        success: "Payment method was successfully updated."
